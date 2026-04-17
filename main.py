@@ -218,13 +218,33 @@ async def approve(call):
 # ================= SEND KEY =================
 @dp.message_handler(lambda m: m.from_user.id in pending_keys)
 async def send_key(msg: types.Message):
-    uid = pending_keys[msg.from_user.id]
+    uid = pending_keys.get(msg.from_user.id)
 
-    await bot.send_message(uid,
-        f"✅ Approved!\n\n🔑 Key: `{msg.text}`\n\n🚀 GET ACCESS")
+    if not uid:
+        return
 
-    del pending_keys[msg.from_user.id]
+    key_text = msg.text.strip()
 
+    # Copy-like button
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton(
+            "📋 Copy Key",
+            switch_inline_query_current_chat=key_text
+        )
+    )
+
+    await bot.send_message(
+        uid,
+        f"✅ ACCESS GRANTED\n\n"
+        f"🔑 Your Key:\n"
+        f"`{key_text}`\n\n"
+        f"🚀 GET ACCESS BELOW",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+    pending_keys.pop(msg.from_user.id, None)
 # ================= REJECT =================
 @dp.callback_query_handler(lambda c: c.data.startswith("no_"))
 async def reject(call):
