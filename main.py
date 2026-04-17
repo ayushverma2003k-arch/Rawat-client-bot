@@ -6,11 +6,11 @@ from aiogram.utils import executor
 
 API_TOKEN = os.getenv("BOT_TOKEN")
 
-CHANNEL_ID = -1002630646996
+CHANNEL_ID = -1003980205023
 INVITE_LINK = "https://t.me/+OnH8MepS0LhjNTc1"
 
 OWNER_ID = 8044682416
-ADMIN_IDS = [5569883164]
+ADMIN_IDS = [8044682416]
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
