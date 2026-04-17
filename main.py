@@ -221,7 +221,7 @@ async def send_key(msg: types.Message):
     uid = pending_keys[msg.from_user.id]
 
     await bot.send_message(uid,
-        f"✅ Approved!\n\n🔑 {msg.text}\n\n🚀 GET ACCESS")
+        f"✅ Approved!\n\n🔑 Key: `{msg.text}`\n\n🚀 GET ACCESS")
 
     del pending_keys[msg.from_user.id]
 
