@@ -6,8 +6,8 @@ from aiogram.utils import executor
 
 API_TOKEN = os.getenv("BOT_TOKEN")
 
-CHANNEL_ID = -1003980205023
-INVITE_LINK = "https://t.me/+P17obqHCK5s5OWNl"
+CHANNEL_ID = -1002630646996
+INVITE_LINK = "https://t.me/+OnH8MepS0LhjNTc1"
 
 OWNER_ID = 8044682416
 ADMIN_IDS = []
@@ -147,7 +147,7 @@ async def profile(call):
 # ================= REF =================
 @dp.callback_query_handler(lambda c: c.data == "ref")
 async def ref(call):
-    link = f"https://t.me/YOUR_BOT_USERNAME?start={call.from_user.id}"
+    link = f"https://t.me/@RawatFreeKeyBot?start={call.from_user.id}"
 
     await call.message.edit_text(
         f"🔗 Referral Link:\n{link}\n\n💸 Earn 10 coins/referral",
@@ -277,7 +277,7 @@ async def stats(m):
 👥 Referrals: {refs}
 
 ━━━━━━━━━━━━━━
-⚡ Powered by Owner
+⚡ Powered by @UndetectedOwner
 """)
 
 @dp.message_handler(commands=['broadcast'])
@@ -331,6 +331,33 @@ async def addref_cmd(m):
         await m.reply("✅ Referrals added")
     except:
         await m.reply("❌ /addref user_id amount")
+ 
+@dp.message_handler(commands=['removeref'])
+async def removeref_cmd(m):
+    if not is_owner(m.from_user.id):
+        return
+
+    try:
+        _, uid, amt = m.text.split()
+        amt = int(amt)
+
+        cur.execute("SELECT referrals FROM users WHERE user_id=?", (uid,))
+        current = cur.fetchone()
+
+        if not current:
+            return await m.reply("❌ User not found")
+
+        new_ref = max(0, current[0] - amt)
+
+        cur.execute(
+            "UPDATE users SET referrals=? WHERE user_id=?",
+            (new_ref, uid)
+        )
+        conn.commit()
+
+        await m.reply(f"⚠️ Referrals updated: {new_ref}")
+    except:
+        await m.reply("❌ Use: /removeref user_id amount")
 
 @dp.message_handler(commands=['addadmin'])
 async def add_admin(m):
