@@ -356,9 +356,9 @@ async def remove_admin(m):
 
 # ================= RUN =================
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)    referrals INTEGER DEFAULT 0
-)
-""")
+    executor.start_polling(dp, skip_updates=True)
+    referrals INTEGER DEFAULT 0)
+    """)
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS requests (
