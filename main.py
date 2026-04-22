@@ -147,7 +147,7 @@ async def profile(call):
 # ================= REF =================
 @dp.callback_query_handler(lambda c: c.data == "ref")
 async def ref(call):
-    link = f"https://t.me/RawatFreeKeyBot?start={call.from_user.id}"
+    link = f"https://t.me/FreeKeyBot?start={call.from_user.id}"
 
     await call.message.edit_text(
         f"🔗 Referral Link:\n{link}\n\n💸 Earn 10 coins/referral",
