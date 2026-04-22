@@ -1,394 +1,272 @@
 import os
-import sqlite3
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils import executor
+import json
+import asyncio
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-API_TOKEN = os.getenv("BOT_TOKEN")
+# -------- ENV --------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID"))
+CHANNELS = os.getenv("CHANNELS", "").split(",")
 
-CHANNEL_ID = "@freefirehck999"
-INVITE_LINK = "https://t.me/freefirehck999"
+ADMINS = [OWNER_ID]
 
-OWNER_ID = 8044682416
-ADMIN_IDS = []
+apps = {}
+users = {}
+pending_upload = {}
 
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
-
-# ================= ROLES =================
-def is_owner(uid):
-    return uid == OWNER_ID
-
-def is_admin(uid):
-    return uid in ADMIN_IDS or uid == OWNER_ID
-
-
-# ================= DB =================
-conn = sqlite3.connect("bot.db")
-cur = conn.cursor()
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    name TEXT,
-    username TEXT,
-    coins INTEGER DEFAULT 0,
-    referrer INTEGER,
-    referrals INTEGER DEFAULT 0
-)
-""")
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS requests (
-    user_id INTEGER,
-    price INTEGER
-)
-""")
-
-conn.commit()
-
-# ================= MEMORY =================
-pending_keys = {}
-
-# ================= FUNCTIONS =================
-def get_user(uid):
-    cur.execute("SELECT * FROM users WHERE user_id=?", (uid,))
-    return cur.fetchone()
-
-def add_user(uid, name, username, ref=None):
-    cur.execute("INSERT INTO users VALUES (?, ?, ?, 0, ?, 0)",
-                (uid, name, username, ref))
-    conn.commit()
-
-def add_coins(uid, amt):
-    cur.execute("UPDATE users SET coins = coins + ? WHERE user_id=?", (amt, uid))
-    conn.commit()
-
-def remove_coins(uid, amt):
-    cur.execute("UPDATE users SET coins = coins - ? WHERE user_id=?", (amt, uid))
-    conn.commit()
-
-def add_ref(uid):
-    cur.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (uid,))
-    conn.commit()
-
-def total_users():
-    cur.execute("SELECT COUNT(*) FROM users")
-    return cur.fetchone()[0]
-
-# ================= JOIN CHECK =================
-async def check_join(user_id):
-    if is_admin(user_id):
-        return True
+# -------- LOAD SAVE --------
+def load_data():
+    global apps, users
     try:
-        m = await bot.get_chat_member(CHANNEL_ID, user_id)
-        return m.status in ["member", "creator", "administrator"]
+        with open("apps.json") as f:
+            apps = json.load(f)
     except:
-        return False
+        apps = {}
 
-# ================= UI =================
-def menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("👤 Profile", callback_data="profile")],
-        [InlineKeyboardButton("💰 Buy Key", callback_data="buy")],
-        [InlineKeyboardButton("🔗 Referral", callback_data="ref")],
-        [InlineKeyboardButton("🏆 Leaderboard", callback_data="top")]
+    try:
+        with open("users.json") as f:
+            users = json.load(f)
+    except:
+        users = {}
+
+def save_apps():
+    with open("apps.json", "w") as f:
+        json.dump(apps, f, indent=4)
+
+def save_users():
+    with open("users.json", "w") as f:
+        json.dump(users, f, indent=4)
+
+# -------- ROLE --------
+def is_admin(uid): return uid in ADMINS
+def is_owner(uid): return uid == OWNER_ID
+
+# -------- JOIN CHECK --------
+async def is_joined(bot, user_id):
+    if is_owner(user_id):
+        return True
+
+    for ch in CHANNELS:
+        try:
+            m = await bot.get_chat_member(ch, user_id)
+            if m.status not in ["member","administrator","creator"]:
+                return False
+        except:
+            return False
+    return True
+
+# -------- ANIMATION --------
+async def animate(msg, steps):
+    for s in steps:
+        await asyncio.sleep(0.7)
+        await msg.edit_text(s)
+
+# -------- START --------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    users[str(uid)] = users.get(str(uid), {"downloads":[]})
+    save_users()
+
+    msg = await update.message.reply_text("👋 Welcome...\n🔄 Starting system...")
+
+    await animate(msg, [
+        "🔄 Checking access...",
+        "⏳ Verifying channels..."
     ])
 
-# ================= START =================
-@dp.message_handler(commands=['start'])
-async def start(message: types.Message):
-
-    if not await check_join(message.from_user.id):
-        kb = InlineKeyboardMarkup().add(
-            InlineKeyboardButton("📢 Join Channel", url=INVITE_LINK),
-            InlineKeyboardButton("✅ Check Again", callback_data="check")
+    if not await is_joined(context.bot, uid):
+        buttons = [
+            [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNELS[0].replace('@','')}")],
+            [InlineKeyboardButton("✅ I Joined", callback_data="check")]
+        ]
+        await msg.edit_text(
+            "⚠️ Access Locked!\n\n👉 Please join all channels first.",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
-        return await message.answer("🚫 Join channel first!", reply_markup=kb)
+        return
 
-    user = get_user(message.from_user.id)
-    args = message.get_args()
+    await msg.edit_text("🎉 Access Granted!\n🛒 Opening Store...")
+    await show_apps(msg)
 
-    if not user:
-        ref = int(args) if args.isdigit() else None
+# -------- SHOW APPS --------
+async def show_apps(msg):
+    if not apps:
+        await msg.edit_text("📭 No apps available")
+        return
 
-        if ref == message.from_user.id:
-            ref = None
+    buttons = []
+    for a in apps:
+        buttons.append([InlineKeyboardButton(apps[a]["name"], callback_data=a)])
 
-        add_user(
-            message.from_user.id,
-            message.from_user.full_name,
-            message.from_user.username or "NoUsername",
-            ref
-        )
-
-        if ref:
-            add_coins(ref, 10)
-            add_ref(ref)
-
-    await message.answer(f"👋 Welcome {message.from_user.full_name}", reply_markup=menu())
-
-# ================= PROFILE =================
-@dp.callback_query_handler(lambda c: c.data == "profile")
-async def profile(call):
-    u = get_user(call.from_user.id)
-
-    text = f"""
-👤 Profile
-
-🆔 ID: {u[0]}
-📛 Name: {u[1]}
-🔗 Username: @{u[2]}
-💰 Coins: {u[3]}
-👥 Referrals: {u[5]}
-"""
-    await call.message.edit_text(text, reply_markup=menu())
-
-# ================= REF =================
-@dp.callback_query_handler(lambda c: c.data == "ref")
-async def ref(call):
-    link = f"https://t.me/RawatFreeKeyBot?start={call.from_user.id}"
-
-    await call.message.edit_text(
-        f"🔗 Referral Link:\n{link}\n\n💸 Earn 10 coins/referral",
-        reply_markup=menu()
+    await msg.edit_text(
+        "🛒 *App Store*\n\nSelect app to download:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# ================= BUY MENU =================
-@dp.callback_query_handler(lambda c: c.data == "buy")
-async def buy(call):
+# -------- CHECK JOIN --------
+async def check(update, context):
+    q = update.callback_query
+    uid = q.from_user.id
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("⚡ 25 Coins (5 Hours)", callback_data="buy_25")],
-        [InlineKeyboardButton("🔥 60 Coins (1 Day)", callback_data="buy_60")],
-        [InlineKeyboardButton("📅 150 Coins (7 Days)", callback_data="buy_150")],
-        [InlineKeyboardButton("📅 280 Coins (15 Days)", callback_data="buy_280")],
-        [InlineKeyboardButton("📅 500 Coins (30 Days)", callback_data="buy_500")],
-        [InlineKeyboardButton("🚀 900 Coins (60 Days)", callback_data="buy_900")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
+    if await is_joined(context.bot, uid):
+        await q.message.edit_text("🎉 Verified!\nOpening store...")
+        await show_apps(q.message)
+    else:
+        await q.answer("❌ Still not joined!", show_alert=True)
+
+# -------- APP CLICK --------
+async def app_click(update, context):
+    q = update.callback_query
+    uid = q.from_user.id
+    app_id = q.data
+
+    if not await is_joined(context.bot, uid):
+        await q.answer("❌ Join required", show_alert=True)
+        return
+
+    msg = await q.message.edit_text("📦 Opening app...")
+
+    await animate(msg, [
+        "📦 Preparing file...",
+        "⬇️ Downloading...",
+        "🔑 Generating key..."
     ])
 
-    await call.message.edit_text("💰 Choose Plan:", reply_markup=kb)
+    app = apps.get(app_id)
+    if not app:
+        await msg.edit_text("❌ App not found")
+        return
 
-# ================= BUY PROCESS =================
-@dp.callback_query_handler(lambda c: c.data.startswith("buy_"))
-async def process(call):
+    if app.get("file_id"):
+        await context.bot.send_document(uid, app["file_id"])
 
-    prices = {
-        "buy_25": 25,
-        "buy_60": 60,
-        "buy_150": 150,
-        "buy_280": 280,
-        "buy_500": 500,
-        "buy_900": 900
-    }
-
-    price = prices.get(call.data)
-    u = get_user(call.from_user.id)
-
-    if u[3] < price:
-        return await call.answer("❌ Not enough coins", show_alert=True)
-
-    remove_coins(call.from_user.id, price)
-
-    cur.execute("INSERT INTO requests VALUES (?, ?)", (call.from_user.id, price))
-    conn.commit()
-
-    for admin in ADMIN_IDS:
-        kb = InlineKeyboardMarkup().add(
-            InlineKeyboardButton("✅ Approve", callback_data=f"ok_{call.from_user.id}_{price}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"no_{call.from_user.id}_{price}")
-        )
-
-        await bot.send_message(admin,
-            f"📥 Request\n👤 @{call.from_user.username}\n💰 {price}",
-            reply_markup=kb)
-
-    await call.message.edit_text("📩 Request sent!")
-
-# ================= APPROVE =================
-@dp.callback_query_handler(lambda c: c.data.startswith("ok_"))
-async def approve(call):
-    _, uid, price = call.data.split("_")
-    uid = int(uid)
-
-    pending_keys[call.from_user.id] = uid
-    await call.message.answer("✍️ Send key now:")
-
-# ================= SEND KEY =================
-@dp.message_handler(lambda m: m.from_user.id in pending_keys)
-@dp.message_handler(lambda m: m.from_user.id in pending_keys)
-async def send_key(msg: types.Message):
-    uid = pending_keys[msg.from_user.id]
-    key_text = msg.text.strip()
-
-    await bot.send_message(
+    await context.bot.send_message(
         uid,
-        f"✅ ACCESS GRANTED\n\n"
-        f"🔑 Your Key:\n"
-        f"`{key_text}`\n\n"
-        f"📌 Long press on the key to copy\n"
-        f"🚀 GET ACCESS",
+        f"🔑 *Your Key:*\n`{app.get('key','No key')}`",
         parse_mode="Markdown"
     )
 
-    del pending_keys[msg.from_user.id]
-# ================= REJECT =================
-@dp.callback_query_handler(lambda c: c.data.startswith("no_"))
-async def reject(call):
-    _, uid, price = call.data.split("_")
-    uid = int(uid)
-    price = int(price)
+    users[str(uid)]["downloads"].append(app_id)
+    save_users()
 
-    add_coins(uid, price)
+    await msg.edit_text("✅ Done!")
 
-    await bot.send_message(uid, "❌ Rejected. Coins refunded.")
+# -------- ADD APP --------
+async def addapp(update, context):
+    if not is_admin(update.effective_user.id): return
 
-    cur.execute("DELETE FROM requests WHERE user_id=?", (uid,))
-    conn.commit()
+    name = context.args[0]
+    pending_upload[update.effective_user.id] = {"app": name}
 
-# ================= LEADERBOARD =================
-@dp.callback_query_handler(lambda c: c.data == "top")
-async def top(call):
-    cur.execute("SELECT username, coins FROM users ORDER BY coins DESC LIMIT 10")
-    data = cur.fetchall()
+    await update.message.reply_text("📁 Send file now")
 
-    text = "🏆 Top Users\n\n"
-    for i, u in enumerate(data, 1):
-        name = u[0] if u[0] != "NoUsername" else "User"
-        text += f"{i}. @{name} — {u[1]}\n"
+# -------- HANDLE FILE --------
+async def handle_file(update, context):
+    uid = update.effective_user.id
+    if uid not in pending_upload: return
 
-    await call.message.edit_text(text)
+    pending_upload[uid]["file_id"] = update.message.document.file_id
+    await update.message.reply_text("🔑 Send key now")
 
-# ================= BACK =================
-@dp.callback_query_handler(lambda c: c.data == "back")
-async def back(call):
-    await call.message.edit_text("🏠 Menu", reply_markup=menu())
+# -------- HANDLE KEY --------
+async def handle_text(update, context):
+    uid = update.effective_user.id
+    if uid not in pending_upload: return
 
-# ================= ADMIN COMMANDS =================
-@dp.message_handler(commands=['stats'])
-async def stats(m):
-    if not is_admin(m.from_user.id):
-        return
+    data = pending_upload[uid]
 
-    cur.execute("SELECT SUM(coins) FROM users")
-    coins = cur.fetchone()[0] or 0
+    apps[data["app"]] = {
+        "name": data["app"],
+        "file_id": data["file_id"],
+        "key": update.message.text
+    }
 
-    cur.execute("SELECT SUM(referrals) FROM users")
-    refs = cur.fetchone()[0] or 0
+    save_apps()
+    del pending_upload[uid]
 
-    await m.reply(f"""
-📊 Bot Stats
+    await update.message.reply_text("✅ App added successfully")
 
-👥 Users: {total_users()}
-💰 Coins: {coins}
-👥 Referrals: {refs}
+# -------- DELETE --------
+async def deleteapp(update, context):
+    if not is_admin(update.effective_user.id): return
 
-━━━━━━━━━━━━━━
-⚡ Powered by @UndetectedOwner
-""")
+    app = context.args[0]
 
-@dp.message_handler(commands=['broadcast'])
-async def broadcast(m):
-    if not is_admin(m.from_user.id):
-        return
+    if app in apps:
+        del apps[app]
+        save_apps()
+        await update.message.reply_text("🗑️ Deleted")
+    else:
+        await update.message.reply_text("❌ Not found")
 
-    text = m.text.replace("/broadcast ", "")
-    cur.execute("SELECT user_id FROM users")
-    users = cur.fetchall()
+# -------- SET KEY --------
+async def setkey(update, context):
+    if not is_admin(update.effective_user.id): return
+
+    app = context.args[0]
+    key = context.args[1]
+
+    if app in apps:
+        apps[app]["key"] = key
+        save_apps()
+        await update.message.reply_text("🔑 Updated")
+
+# -------- STATS --------
+async def stats(update, context):
+    if not is_admin(update.effective_user.id): return
+
+    await update.message.reply_text(
+        f"📊 Stats\n👤 Users: {len(users)}\n📦 Apps: {len(apps)}"
+    )
+
+# -------- BROADCAST --------
+async def broadcast(update, context):
+    if not is_admin(update.effective_user.id): return
+
+    msg = " ".join(context.args)
 
     for u in users:
         try:
-            await bot.send_message(u[0], text)
+            await context.bot.send_message(u, msg)
         except:
             pass
 
-    await m.reply("📣 Sent")
+    await update.message.reply_text("✅ Broadcast sent")
 
-# ================= OWNER COMMANDS =================
-@dp.message_handler(commands=['addcoins'])
-async def addcoins_cmd(m):
-    if not is_owner(m.from_user.id):
-        return
-    try:
-        _, uid, amt = m.text.split()
-        add_coins(int(uid), int(amt))
-        await m.reply("✅ Coins added")
-    except:
-        await m.reply("❌ /addcoins user_id amount")
+# -------- USERS TXT --------
+async def users_cmd(update, context):
+    if not is_admin(update.effective_user.id): return
 
-@dp.message_handler(commands=['removecoins'])
-async def removecoins_cmd(m):
-    if not is_owner(m.from_user.id):
-        return
-    try:
-        _, uid, amt = m.text.split()
-        remove_coins(int(uid), int(amt))
-        await m.reply("⚠️ Coins removed")
-    except:
-        await m.reply("❌ /removecoins user_id amount")
+    with open("users.txt", "w") as f:
+        for u in users:
+            f.write(str(u)+"\n")
 
-@dp.message_handler(commands=['addref'])
-async def addref_cmd(m):
-    if not is_owner(m.from_user.id):
-        return
-    try:
-        _, uid, amt = m.text.split()
-        cur.execute("UPDATE users SET referrals = referrals + ? WHERE user_id=?", (int(amt), int(uid)))
-        conn.commit()
-        await m.reply("✅ Referrals added")
-    except:
-        await m.reply("❌ /addref user_id amount")
- 
-@dp.message_handler(commands=['removeref'])
-async def removeref_cmd(m):
-    if not is_owner(m.from_user.id):
-        return
+    await context.bot.send_document(update.effective_user.id, open("users.txt","rb"))
 
-    try:
-        _, uid, amt = m.text.split()
-        amt = int(amt)
+# -------- MAIN --------
+def main():
+    load_data()
 
-        cur.execute("SELECT referrals FROM users WHERE user_id=?", (uid,))
-        current = cur.fetchone()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-        if not current:
-            return await m.reply("❌ User not found")
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(check, pattern="check"))
+    app.add_handler(CallbackQueryHandler(app_click))
 
-        new_ref = max(0, current[0] - amt)
+    app.add_handler(CommandHandler("addapp", addapp))
+    app.add_handler(CommandHandler("deleteapp", deleteapp))
+    app.add_handler(CommandHandler("setkey", setkey))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("users", users_cmd))
 
-        cur.execute(
-            "UPDATE users SET referrals=? WHERE user_id=?",
-            (new_ref, uid)
-        )
-        conn.commit()
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-        await m.reply(f"⚠️ Referrals updated: {new_ref}")
-    except:
-        await m.reply("❌ Use: /removeref user_id amount")
+    print("Bot running...")
+    app.run_polling()
 
-@dp.message_handler(commands=['addadmin'])
-async def add_admin(m):
-    if not is_owner(m.from_user.id):
-        return
-    try:
-        _, uid = m.text.split()
-        ADMIN_IDS.append(int(uid))
-        await m.reply("✅ Admin added")
-    except:
-        await m.reply("❌ /addadmin user_id")
-
-@dp.message_handler(commands=['removeadmin'])
-async def remove_admin(m):
-    if not is_owner(m.from_user.id):
-        return
-    try:
-        _, uid = m.text.split()
-        ADMIN_IDS.remove(int(uid))
-        await m.reply("⚠️ Admin removed")
-    except:
-        await m.reply("❌ /removeadmin user_id")
-
-# ================= RUN =================
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    main()
